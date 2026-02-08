@@ -214,6 +214,13 @@ def run_conversation_with_tools(
         "total_tokens": 0,
     }
 
+    summarizer_usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "num_calls": 0,
+    }
+
     combined_output = []
     tool_outputs = {}
     all_responses = []
@@ -272,7 +279,7 @@ def run_conversation_with_tools(
         ]
 
         if not function_calls:
-            return response, combined_output, cumulative_usage, tool_outputs, trajectory
+            return response, combined_output, cumulative_usage, tool_outputs, trajectory, summarizer_usage
 
         for item in response.output:
             serialized_item = item.model_dump(mode="python")
@@ -286,8 +293,15 @@ def run_conversation_with_tools(
                 if tool_call.name == "compact":
                     print(f"[Compact] Summarizing conversation history (iter {iteration + 1})…")
                     history_text = format_history_for_compact(input_messages)
-                    summary = call_compact_openai(client, _compact_model, history_text)
+                    summary, compact_usage = call_compact_openai(client, _compact_model, history_text)
                     print(f"[Compact] Summary produced ({len(summary)} chars). Replacing history.")
+
+                    # Accumulate summarizer token usage
+                    if compact_usage:
+                        summarizer_usage["input_tokens"] += compact_usage.get("input_tokens", 0)
+                        summarizer_usage["output_tokens"] += compact_usage.get("output_tokens", 0)
+                        summarizer_usage["total_tokens"] += compact_usage.get("total_tokens", 0)
+                        summarizer_usage["num_calls"] += 1
 
                     # Preserve the original user query (first message)
                     original_user_msg = initial_request["input"][0]
@@ -399,7 +413,7 @@ def run_conversation_with_tools(
     print(f"Warning: Conversation hit max iterations ({max_iterations})")
 
     final_response = all_responses[-1] if all_responses else response
-    return final_response, combined_output, cumulative_usage, tool_outputs, trajectory
+    return final_response, combined_output, cumulative_usage, tool_outputs, trajectory, summarizer_usage
 
 
 def _persist_response(
@@ -412,6 +426,7 @@ def _persist_response(
     *,
     query_id: str | None = None,
     trajectory: list[dict] | None = None,
+    summarizer_usage: dict | None = None,
 ):
     """Persist request & response JSON for later inspection."""
 
@@ -504,6 +519,7 @@ def _persist_response(
                 ),
                 "result": normalized_results,
                 "trajectory": trajectory or [],
+                "summarizer_usage": summarizer_usage or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "num_calls": 0},
             },
             f,
             indent=2,
@@ -569,7 +585,7 @@ def _process_tsv_dataset(
         )
 
         try:
-            response, combined_output, cumulative_usage, tool_outputs, trajectory = (
+            response, combined_output, cumulative_usage, tool_outputs, trajectory, sum_usage = (
                 run_conversation_with_tools(
                     client, request_body, tool_handler, args.max_iterations,
                     compact_model=getattr(args, "compact_model", None),
@@ -591,6 +607,7 @@ def _process_tsv_dataset(
                 tool_outputs,
                 query_id=qid,
                 trajectory=trajectory,
+                summarizer_usage=sum_usage,
             )
 
         except Exception as exc:
@@ -805,7 +822,7 @@ def main():
     )
 
     print("Sending request to OpenAI Responses API with function calling...")
-    response, combined_output, cumulative_usage, tool_outputs, trajectory = (
+    response, combined_output, cumulative_usage, tool_outputs, trajectory, sum_usage = (
         run_conversation_with_tools(
             client, request_body, tool_handler, args.max_iterations,
             compact_model=args.compact_model,
@@ -821,6 +838,7 @@ def main():
         tool_outputs,
         query_id=None,
         trajectory=trajectory,
+        summarizer_usage=sum_usage,
     )
 
     rprint(response)

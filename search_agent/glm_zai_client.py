@@ -166,6 +166,13 @@ def run_conversation_with_tools(
         "reasoning_tokens": 0,
     }
 
+    summarizer_usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "num_calls": 0,
+    }
+
     normalized_results: list[dict[str, Any]] = []
 
     finish_reason: Optional[str] = None
@@ -270,8 +277,15 @@ def run_conversation_with_tools(
                 if tname == "compact":
                     print(f"[Compact] Summarizing conversation history…")
                     history_text = format_history_for_compact(messages)
-                    summary = call_compact_openai(client, _compact_model, history_text)
+                    summary, compact_usage = call_compact_openai(client, _compact_model, history_text)
                     print(f"[Compact] Summary produced ({len(summary)} chars). Replacing history.")
+
+                    # Accumulate summarizer token usage
+                    if compact_usage:
+                        summarizer_usage["input_tokens"] += compact_usage.get("input_tokens", 0)
+                        summarizer_usage["output_tokens"] += compact_usage.get("output_tokens", 0)
+                        summarizer_usage["total_tokens"] += compact_usage.get("total_tokens", 0)
+                        summarizer_usage["num_calls"] += 1
 
                     # Preserve original system prompt and user query
                     new_messages: list[dict[str, Any]] = []
@@ -354,10 +368,10 @@ def run_conversation_with_tools(
     if finish_reason is None:
         print(f"Warning: Conversation hit max iterations ({max_iterations}) without final response")
 
-    return normalized_results, cumulative_usage, finish_reason, trajectory
+    return normalized_results, cumulative_usage, finish_reason, trajectory, summarizer_usage
 
 
-def _persist_response(out_dir: str, *, model: str, query_id: str | None, system_prompt: str | None, max_tokens: int, normalized_results: list[dict[str, Any]], cumulative_usage: dict, finish_reason: Optional[str], trajectory: list[dict[str, Any]] | None = None):
+def _persist_response(out_dir: str, *, model: str, query_id: str | None, system_prompt: str | None, max_tokens: int, normalized_results: list[dict[str, Any]], cumulative_usage: dict, finish_reason: Optional[str], trajectory: list[dict[str, Any]] | None = None, summarizer_usage: dict | None = None):
     os.makedirs(out_dir, exist_ok=True)
 
     tool_call_counts: dict[str, int] = {}
@@ -395,6 +409,7 @@ def _persist_response(out_dir: str, *, model: str, query_id: str | None, system_
             "retrieved_docids": extract_retrieved_docids_from_result(normalized_results),
             "result": normalized_results,
             "trajectory": trajectory or [],
+            "summarizer_usage": summarizer_usage or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "num_calls": 0},
         }, f, indent=2, default=str)
 
     print("Saved response to", filename, "| tool call counts:", tool_call_counts)
@@ -442,7 +457,7 @@ def _process_tsv_dataset(tsv_path: str, client: OpenAI, args, tool_handler: Sear
 
     def _handle_single_query(qid: str, qtext: str, pbar=None):
         try:
-            normalized_results, cumulative_usage, finish_reason, traj = run_conversation_with_tools(
+            normalized_results, cumulative_usage, finish_reason, traj, sum_usage = run_conversation_with_tools(
                 client,
                 query=qtext,
                 model=args.model,
@@ -471,6 +486,7 @@ def _process_tsv_dataset(tsv_path: str, client: OpenAI, args, tool_handler: Sear
                 cumulative_usage=cumulative_usage,
                 finish_reason=finish_reason,
                 trajectory=traj,
+                summarizer_usage=sum_usage,
             )
         except Exception as exc:
             print(f"[Error] Query id={qid} failed: {exc}")
@@ -615,7 +631,7 @@ def main():
                 pass
 
     print("Sending request to GLM with function calling...")
-    normalized_results, cumulative_usage, finish_reason, trajectory = run_conversation_with_tools(
+    normalized_results, cumulative_usage, finish_reason, trajectory, sum_usage = run_conversation_with_tools(
         client,
         query=args.query,
         model=args.model,
@@ -639,6 +655,7 @@ def main():
         cumulative_usage=cumulative_usage,
         finish_reason=finish_reason,
         trajectory=trajectory,
+        summarizer_usage=sum_usage,
     )
 
     # Print final output text if present

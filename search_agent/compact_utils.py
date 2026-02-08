@@ -143,11 +143,15 @@ def format_history_for_compact(messages: List[Dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def call_compact_openai(client, model: str, history_text: str, compact_prompt: str | None = None) -> str:
+def call_compact_openai(client, model: str, history_text: str, compact_prompt: str | None = None) -> tuple[str, dict]:
     """Call an OpenAI-compatible API to produce a summary of the conversation
     history.
 
     Works for both OpenAI and GLM (which uses the OpenAI SDK).
+
+    Returns:
+        (summary_text, usage_dict) where usage_dict has input_tokens,
+        output_tokens, total_tokens from the summarizer call.
     """
     prompt = compact_prompt or COMPACT_PROMPT
 
@@ -161,12 +165,27 @@ def call_compact_openai(client, model: str, history_text: str, compact_prompt: s
         max_tokens=4096,
     )
 
-    return response.choices[0].message.content.strip()
+    summary = response.choices[0].message.content.strip()
+
+    usage: dict = {}
+    if hasattr(response, "usage") and response.usage:
+        usage = {
+            "input_tokens": getattr(response.usage, "prompt_tokens", 0) or 0,
+            "output_tokens": getattr(response.usage, "completion_tokens", 0) or 0,
+            "total_tokens": getattr(response.usage, "total_tokens", 0) or 0,
+        }
+
+    return summary, usage
 
 
-def call_compact_anthropic(client, model: str, history_text: str, compact_prompt: str | None = None) -> str:
+def call_compact_anthropic(client, model: str, history_text: str, compact_prompt: str | None = None) -> tuple[str, dict]:
     """Call the Anthropic Messages API to produce a summary of the
-    conversation history."""
+    conversation history.
+
+    Returns:
+        (summary_text, usage_dict) where usage_dict has input_tokens,
+        output_tokens, total_tokens from the summarizer call.
+    """
     prompt = compact_prompt or COMPACT_PROMPT
 
     response = client.messages.create(
@@ -184,4 +203,16 @@ def call_compact_anthropic(client, model: str, history_text: str, compact_prompt
     for block in response.content:
         if hasattr(block, "text"):
             parts.append(block.text)
-    return "\n".join(parts).strip()
+    summary = "\n".join(parts).strip()
+
+    usage: dict = {}
+    if hasattr(response, "usage") and response.usage:
+        in_tok = getattr(response.usage, "input_tokens", 0) or 0
+        out_tok = getattr(response.usage, "output_tokens", 0) or 0
+        usage = {
+            "input_tokens": in_tok,
+            "output_tokens": out_tok,
+            "total_tokens": in_tok + out_tok,
+        }
+
+    return summary, usage
