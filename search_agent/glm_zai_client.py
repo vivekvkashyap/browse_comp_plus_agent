@@ -296,7 +296,11 @@ def run_conversation_with_tools(
                     normalized_results[-1]["output"] = output
 
                     # Record compact summary and tool result in trajectory
-                    trajectory.append({"role": "compact_summary", "content": summary})
+                    trajectory.append({
+                        "role": "compact_summary",
+                        "input": history_text,
+                        "content": summary,
+                    })
                     trajectory.append({
                         "role": "tool",
                         "tool_name": "compact",
